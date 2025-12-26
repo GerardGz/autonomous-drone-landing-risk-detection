@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 
 class SegmentationDataset(Dataset):
     def __init__(
+        # Image and Mask Directory are subject to change once I actually upload data in the folders
         self,
         root_dir,
         image_dir="images",
