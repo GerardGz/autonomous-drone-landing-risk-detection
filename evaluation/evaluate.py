@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 
-from models.model import SegmentationModel
+from training.model import SegmentationModel
 from training.dataset import SegmentationDataset
 from utils.general_helpers import compute_risk, safety_decision
 from utils.image_utils import colorize_mask, overlay_mask  # optional
