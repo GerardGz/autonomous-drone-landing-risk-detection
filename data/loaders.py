@@ -1,4 +1,4 @@
-from data.dataset import SegmentationDataset
+from training.dataset import SegmentationDataset
 from data.transform import image_transform, mask_transform
 
 def get_datasets(mode="train"):

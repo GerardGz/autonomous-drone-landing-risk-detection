@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+                                                                                
+"features": [
+{ "type": "Feature", "properties": { "OBJECTID": 0, "FID_VEGAS_": 0, "Id": 0, "FID_Vegas": 0, "Name": "None", "AREA": 0.000000, "Shape_Leng": 0.000000, "Shape_Le_1": 0.000000, "SISL": 0.000000, "OBJECTID_1": 0, "Shape_Le_2": 63.912827, "Shape_Le_3": 0.000527, "Shape_Area": 0.000000, "partialBuilding": 1.000000, "partialDec": 0.101376 }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -115.153063847999988, 36.144000224000024, 0.0 ], [ -115.153060036999989, 36.14391407200003, 0.0 ], [ -115.153077599692139, 36.143913565673571, 0.0 ], [ -115.153077599692139, 36.143999827287026, 0.0 ], [ -115.153063847999988, 36.144000224000024, 0.0 ] ] ] } }
+]
+}
