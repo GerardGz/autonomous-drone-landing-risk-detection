@@ -1,43 +1,47 @@
 # train.py
+import sys
 import os
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
-from data.loaders import SegmentationDataset
-from data.transform import image_transform, mask_transform
-from model import get_model
+from torch.utils.data import DataLoader
+
+# ---------------------------
+# Ensure repo root is on sys.path
+# ---------------------------
+REPO_ROOT = Path(__file__).parent.parent.resolve()
+sys.path.append(str(REPO_ROOT))
+
+# Imports (now work regardless of working directory)
+from dataset import get_dataloaders       # training/dataset.py
+from models.model import get_model        # models/model.py
 
 # ---------------------------
 # Configuration
 # ---------------------------
-DATA_DIR = "./data"           # your dataset folder
+DATA_DIR = REPO_ROOT / "data/spacenet/processed"  # processed SpaceNet folder
 BATCH_SIZE = 4
 NUM_EPOCHS = 10
 LEARNING_RATE = 1e-3
-VAL_SPLIT = 0.2
-CHECKPOINT_DIR = "./checkpoints"
+CHECKPOINT_DIR = REPO_ROOT / "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ---------------------------
-# Dataset and Dataloaders
+# Dataloaders
 # ---------------------------
-dataset = SegmentationDataset(
-    images_dir=os.path.join(DATA_DIR, "images"),
-    masks_dir=os.path.join(DATA_DIR, "masks"),
-    image_transform=image_transform,
-    mask_transform=mask_transform
+train_loader, val_loader = get_dataloaders(
+    images_dir=DATA_DIR / "images",
+    masks_dir=DATA_DIR / "masks",
+    train_txt=DATA_DIR / "splits/train.txt",
+    val_txt=DATA_DIR / "splits/val.txt",
+    batch_size=BATCH_SIZE
 )
 
-# Train/Validation split
-val_size = int(len(dataset) * VAL_SPLIT)
-train_size = len(dataset) - val_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+train_size = len(train_loader.dataset)
+val_size = len(val_loader.dataset)
 
 # ---------------------------
 # Model, Loss, Optimizer
@@ -84,7 +88,7 @@ for epoch in range(1, NUM_EPOCHS + 1):
     # ---------------------------
     # Save checkpoint
     # ---------------------------
-    checkpoint_path = os.path.join(CHECKPOINT_DIR, f"unet_epoch_{epoch}.pth")
+    checkpoint_path = CHECKPOINT_DIR / f"unet_epoch_{epoch}.pth"
     torch.save(model.state_dict(), checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
