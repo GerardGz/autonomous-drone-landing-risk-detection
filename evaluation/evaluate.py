@@ -1,58 +1,65 @@
+# evaluate.py
 import torch
-from torch.utils.data import DataLoader
-
-from training.model import SegmentationModel
-from training.dataset import SegmentationDataset
-from utils.general_helpers import compute_risk, safety_decision
-from utils.image_utils import colorize_mask, overlay_mask  # optional
-
-import cv2
+import matplotlib.pyplot as plt
+from PIL import Image
 import numpy as np
+from pathlib import Path
+import sys
 
-# -------------------------------
-# Device
-# -------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Add repo root so imports work from anywhere
+repo_root = Path(__file__).parent.parent
+sys.path.append(str(repo_root))
 
-# -------------------------------
-# Load trained model
-# -------------------------------
-num_classes = 2
-model = SegmentationModel(num_classes=num_classes).to(device)
-model.load_state_dict(torch.load("best_model.pth", map_location=device))
+from models.model import get_model
+
+# ---------------------------
+# Configuration
+# ---------------------------
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+CHECKPOINT_PATH = repo_root / "checkpoints/unet_epoch_10.pth"
+IMAGES_DIR = repo_root / "data/spacenet/processed/images"
+NUM_SAMPLES = 10  # number of images to visualize
+
+# ---------------------------
+# Load model
+# ---------------------------
+model = get_model(device=DEVICE)
+model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE))
 model.eval()
+print("Model loaded successfully!")
 
-# -------------------------------
-# Load dataset
-# -------------------------------
-val_dataset = SegmentationDataset(split="val")  # customize as needed
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+# ---------------------------
+# Get sample images
+# ---------------------------
+all_images = sorted(list(IMAGES_DIR.glob("*.png")))
+sample_images = all_images[:NUM_SAMPLES]
 
-# -------------------------------
-# Evaluation loop
-# -------------------------------
-for idx, (image, mask) in enumerate(val_loader):
-    image = image.to(device)
-    
-    # Forward pass
+# ---------------------------
+# Loop over images and visualize
+# ---------------------------
+for img_path in sample_images:
+    img = Image.open(img_path).convert("RGB")
+    img_tensor = torch.tensor(np.array(img), dtype=torch.float32).permute(2,0,1).unsqueeze(0)/255.0
+    img_tensor = img_tensor.to(DEVICE)
+
+    # Prediction
     with torch.no_grad():
-        output = model(image)                   # [1, C, H, W]
-        pred_mask = torch.argmax(output, dim=1) # [1, H, W]
-        pred_mask = pred_mask.squeeze(0)        # [H, W]
-    
-    # Compute risk
-    risk = compute_risk(pred_mask)
-    decision = safety_decision(risk)
-    
-    print(f"Image {idx}: Risk {risk:.2%} → {decision}")
-    
-    # Optional: visualize
-    # Convert tensor to numpy
-    img_np = image.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    img_np = (img_np * 255).astype(np.uint8)
-    color_mask = colorize_mask(pred_mask.cpu().numpy())
-    overlay = overlay_mask(img_np, color_mask)
-    
-    # Show or save
-    cv2.imshow("Overlay", overlay)
-    cv2.waitKey(100)  # press any key to advance
+        pred = torch.sigmoid(model(img_tensor)).squeeze().cpu().numpy()
+
+    mask = pred > 0.5  # binary threshold
+
+    # Plot
+    plt.figure(figsize=(8,4))
+    plt.subplot(1,2,1)
+    plt.title("Original Image")
+    plt.imshow(img)
+    plt.axis("off")
+
+    plt.subplot(1,2,2)
+    plt.title("Predicted Mask")
+    plt.imshow(mask, cmap="gray")
+    plt.axis("off")
+
+    plt.show()  # blocks until window closed
+
+print("Finished visualizing sample images!")
