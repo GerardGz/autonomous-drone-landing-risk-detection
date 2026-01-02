@@ -1,4 +1,4 @@
-# evaluate_deepglobe.py
+
 import sys
 from pathlib import Path
 import torch
@@ -13,9 +13,9 @@ if str(repo_root) not in sys.path:
 from training.dataset_deep import DeepGlobeDataset
 from models.model import get_model
 
-# ------------------------------
+
 # RGB colors for visualization
-# ------------------------------
+
 CLASS_COLORS = [
     (0, 255, 255),    # urban
     (255, 255, 0),    # agriculture
@@ -31,9 +31,9 @@ CLASS_NAMES = [
     "forest", "water", "barren", "unknown"
 ]
 
-# ------------------------------
+
 # Threat scoring
-# ------------------------------
+
 CLASS_RISK = {
     "urban": 1.0,
     "agriculture": 0.5,
@@ -46,15 +46,15 @@ CLASS_RISK = {
 
 def classify_threat(score):
     if score < 0.40:
-        return "SAFE 🟢"
+        return "SAFE "
     elif score < 0.60:
-        return "CAUTION 🟡"
+        return "CAUTION "
     else:
-        return "DANGEROUS 🔴"
+        return "DANGEROUS "
 
-# ------------------------------
+
 # Evaluator
-# ------------------------------
+
 class Evaluator:
     def __init__(self, model, dataset, device="cpu", batch_size=1, visualize=True, max_images=8):
         self.model = model
@@ -169,9 +169,9 @@ class Evaluator:
             plt.tight_layout()
             plt.show()
 
-# ------------------------------
+
 # Main
-# ------------------------------
+
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     evaluator = Evaluator(model, dataset, device=device)
     results = evaluator.evaluate()
 
-    print("\n📊 DeepGlobe Multi-class Evaluation Results:")
+    print("\n DeepGlobe Multi-class Evaluation Results:")
     for n, s in zip(CLASS_NAMES, results["dice_per_class"]):
         print(f"{n:12}: Dice = {s:.4f}")
     for n, s in zip(CLASS_NAMES, results["iou_per_class"]):
