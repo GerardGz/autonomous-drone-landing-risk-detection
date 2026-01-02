@@ -1,99 +1,139 @@
+# train_deep.py
 import sys
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, random_split
+from tqdm import tqdm
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+import torch.nn as nn
+import torch.optim as optim
 
-# -----------------------------
-# Add repo root for imports
-# -----------------------------
 repo_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(repo_root))
+if str(repo_root) not in sys.path:
+    sys.path.append(str(repo_root))
 
-from dataset_deep import DeepGlobeDataset
+from training.dataset_deep import DeepGlobeDataset
 from models.model import get_model
-from losses import BCEWithLogitsDiceLoss
-from evaluation.evaluate_deepglobe import Evaluator
 
-def main():
-    # -----------------------------
-    # Config
-    # -----------------------------
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 4
-    NUM_EPOCHS = 10
-    LR = 1e-4
-    RESIZE = (256, 256)
-    CHECKPOINT_DIR = repo_root / "checkpoints"
-    CHECKPOINT_DIR.mkdir(exist_ok=True)
-    SUBSET_SIZE = None
-    VAL_SPLIT = 0.1  # 10% validation split
+# ------------------------------
+# Hyperparameters
+# ------------------------------
+BATCH_SIZE = 8
+LR = 1e-3
+EPOCHS = 30
+IMG_SIZE = (256, 256)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # -----------------------------
-    # Dataset & Loader
-    # -----------------------------
-    full_train_dataset = DeepGlobeDataset(
+# ------------------------------
+# Albumentations augmentations
+# ------------------------------
+train_transforms = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.RandomRotate90(p=0.5),
+    A.RandomBrightnessContrast(p=0.5),
+    A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
+    ToTensorV2()
+])
+
+val_transforms = A.Compose([
+    A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
+    ToTensorV2()
+])
+
+# ------------------------------
+# Augmented Dataset Wrapper
+# ------------------------------
+class AugmentedDeepGlobeDataset(DeepGlobeDataset):
+    def __init__(self, folder, transforms=None, **kwargs):
+        super().__init__(folder, **kwargs)
+        self.transforms = transforms
+
+    def __getitem__(self, idx):
+        img, mask, img_name = super().__getitem__(idx)
+
+        # Albumentations expects HWC uint8 for image and mask
+        import numpy as np
+        img_np = (img.permute(1,2,0).numpy() * 255).astype(np.uint8)
+        mask_np = mask.squeeze(0).numpy().astype(np.uint8)
+
+        if self.transforms:
+            augmented = self.transforms(image=img_np, mask=mask_np)
+            img_tensor = augmented['image']
+            mask_tensor = augmented['mask'].long().unsqueeze(0)
+        else:
+            img_tensor = img
+            mask_tensor = mask
+
+        return img_tensor, mask_tensor, img_name
+
+# ------------------------------
+# Training function
+# ------------------------------
+def train():
+    # Full dataset
+    dataset = AugmentedDeepGlobeDataset(
         repo_root / "data/deepglobe/raw/train",
-        resize=RESIZE,
-        subset_size=SUBSET_SIZE
+        subset_size=None,
+        resize=IMG_SIZE,
+        shuffle=True,
+        transforms=train_transforms
     )
 
-    val_size = int(len(full_train_dataset) * VAL_SPLIT)
-    train_size = len(full_train_dataset) - val_size
-    train_dataset, val_dataset = random_split(full_train_dataset, [train_size, val_size])
+    # Split train/val 90/10
+    val_size = int(0.1 * len(dataset))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+    # Apply validation transforms
+    val_dataset.dataset.transforms = val_transforms
 
-    print(f"✅ Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    # -----------------------------
     # Model
-    # -----------------------------
-    model = get_model(in_channels=3, out_channels=1).to(DEVICE)
-    PRETRAINED_PATH = CHECKPOINT_DIR / "spacenet_pretrained.pth"
-    if PRETRAINED_PATH.exists():
-        model.load_state_dict(torch.load(PRETRAINED_PATH, map_location=DEVICE))
-        print("✅ Loaded SpaceNet pre-trained weights")
+    model = get_model(in_channels=3, out_channels=7).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
-    # -----------------------------
-    # Loss & Optimizer
-    # -----------------------------
-    criterion = BCEWithLogitsDiceLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-
-    # -----------------------------
-    # Training Loop
-    # -----------------------------
-    best_val_dice = 0.0
-    for epoch in range(1, NUM_EPOCHS + 1):
+    for epoch in range(EPOCHS):
         model.train()
-        train_losses = []
+        train_loss = 0.0
 
-        for imgs, masks, _ in train_loader:
-            imgs, masks = imgs.to(DEVICE), masks.to(DEVICE)
+        for imgs, masks, _ in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Training]"):
+            imgs, masks = imgs.to(DEVICE), masks.squeeze(1).to(DEVICE)  # B x H x W
             optimizer.zero_grad()
-            preds = model(imgs)
-            loss = criterion(preds, masks)
+            outputs = model(imgs)  # B x 7 x H x W
+            loss = criterion(outputs, masks)
             loss.backward()
             optimizer.step()
-            train_losses.append(loss.item())
+            train_loss += loss.item()
+
+        avg_train_loss = train_loss / len(train_loader)
 
         # Validation
-        evaluator = Evaluator(model, val_dataset, device=DEVICE, batch_size=BATCH_SIZE)
-        results = evaluator.evaluate()
-        val_dice = results.get("dice", 0.0)
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for imgs, masks, _ in val_loader:
+                imgs, masks = imgs.to(DEVICE), masks.squeeze(1).to(DEVICE)
+                outputs = model(imgs)
+                loss = criterion(outputs, masks)
+                val_loss += loss.item()
+        avg_val_loss = val_loss / len(val_loader)
 
-        print(f"Epoch [{epoch}/{NUM_EPOCHS}] | Train Loss: {sum(train_losses)/len(train_losses):.4f} | Val Dice: {val_dice:.4f}")
+        scheduler.step(avg_val_loss)
+        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
-        # Save best model
-        if val_dice > best_val_dice:
-            best_val_dice = val_dice
-            checkpoint_path = CHECKPOINT_DIR / "deepglobe_finetuned_best.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"💾 Saved best model to {checkpoint_path}")
+    # Save model
+    save_path = repo_root / "checkpoints/deepglobe_multiclass_finetuned.pth"
+    torch.save(model.state_dict(), save_path)
+    print(f"✅ Model saved to {save_path}")
 
-    print("✅ Fine-tuning complete.")
-
-
+# ------------------------------
+# Main
+# ------------------------------
 if __name__ == "__main__":
-    main()
+    train()
