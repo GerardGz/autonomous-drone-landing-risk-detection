@@ -1,95 +1,139 @@
-# model.py
+
+import sys
+from pathlib import Path
 import torch
+from torch.utils.data import DataLoader, random_split
+from tqdm import tqdm
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.optim as optim
 
-class DoubleConv(nn.Module):
-    """
-    Two consecutive convolution layers with BatchNorm + ReLU
-    """
-    def __init__(self, in_channels, out_channels):
-        super(DoubleConv, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.append(str(repo_root))
 
-    def forward(self, x):
-        return self.conv(x)
+from training.dataset_deep import DeepGlobeDataset
+from models.model import get_model
 
 
-class UNet(nn.Module):
-    """
-    UNet for binary segmentation (1 channel output)
-    """
-    def __init__(self, in_channels=3, out_channels=1):
-        super(UNet, self).__init__()
+# Hyperparameters
 
-        # Downsampling
-        self.dconv_down1 = DoubleConv(in_channels, 64)
-        self.dconv_down2 = DoubleConv(64, 128)
-        self.dconv_down3 = DoubleConv(128, 256)
-        self.dconv_down4 = DoubleConv(256, 512)
-        self.maxpool = nn.MaxPool2d(2)
-
-        # Upsampling
-        self.upsample4 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.dconv_up3 = DoubleConv(512, 256)
-
-        self.upsample3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dconv_up2 = DoubleConv(256, 128)
-
-        self.upsample2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dconv_up1 = DoubleConv(128, 64)
-
-        # Final output
-        self.conv_last = nn.Conv2d(64, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        # Downsampling
-        conv1 = self.dconv_down1(x)
-        conv2 = self.dconv_down2(self.maxpool(conv1))
-        conv3 = self.dconv_down3(self.maxpool(conv2))
-        conv4 = self.dconv_down4(self.maxpool(conv3))
-
-        # Upsampling with size fix
-        x = self.upsample4(conv4)
-        x = F.interpolate(x, size=(conv3.size(2), conv3.size(3)), mode='bilinear', align_corners=False)
-        x = torch.cat([x, conv3], dim=1)
-        x = self.dconv_up3(x)
-
-        x = self.upsample3(x)
-        x = F.interpolate(x, size=(conv2.size(2), conv2.size(3)), mode='bilinear', align_corners=False)
-        x = torch.cat([x, conv2], dim=1)
-        x = self.dconv_up2(x)
-
-        x = self.upsample2(x)
-        x = F.interpolate(x, size=(conv1.size(2), conv1.size(3)), mode='bilinear', align_corners=False)
-        x = torch.cat([x, conv1], dim=1)
-        x = self.dconv_up1(x)
-
-        out = self.conv_last(x)
-        return out
+BATCH_SIZE = 8
+LR = 1e-3
+EPOCHS = 30
+IMG_SIZE = (256, 256)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def get_model(in_channels=3, out_channels=1, device=None):
-    """
-    Instantiate UNet and move to device
-    """
-    model = UNet(in_channels=in_channels, out_channels=out_channels)
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    return model.to(device)
+# Albumentations augmentations
+
+train_transforms = A.Compose([
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.RandomRotate90(p=0.5),
+    A.RandomBrightnessContrast(p=0.5),
+    A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
+    ToTensorV2()
+])
+
+val_transforms = A.Compose([
+    A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
+    ToTensorV2()
+])
 
 
-# Quick test
+# Augmented Dataset Wrapper
+
+class AugmentedDeepGlobeDataset(DeepGlobeDataset):
+    def __init__(self, folder, transforms=None, **kwargs):
+        super().__init__(folder, **kwargs)
+        self.transforms = transforms
+
+    def __getitem__(self, idx):
+        img, mask, img_name = super().__getitem__(idx)
+
+        # Albumentations expects HWC uint8 for image and mask
+        import numpy as np
+        img_np = (img.permute(1,2,0).numpy() * 255).astype(np.uint8)
+        mask_np = mask.squeeze(0).numpy().astype(np.uint8)
+
+        if self.transforms:
+            augmented = self.transforms(image=img_np, mask=mask_np)
+            img_tensor = augmented['image']
+            mask_tensor = augmented['mask'].long().unsqueeze(0)
+        else:
+            img_tensor = img
+            mask_tensor = mask
+
+        return img_tensor, mask_tensor, img_name
+
+
+# Training function
+
+def train():
+    # Full dataset
+    dataset = AugmentedDeepGlobeDataset(
+        repo_root / "data/deepglobe/raw/train",
+        subset_size=None,
+        resize=IMG_SIZE,
+        shuffle=True,
+        transforms=train_transforms
+    )
+
+    # Split train/val 90/10
+    val_size = int(0.1 * len(dataset))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    # Apply validation transforms
+    val_dataset.dataset.transforms = val_transforms
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+
+    # Model
+    model = get_model(in_channels=3, out_channels=7).to(DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+    for epoch in range(EPOCHS):
+        model.train()
+        train_loss = 0.0
+
+        for imgs, masks, _ in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Training]"):
+            imgs, masks = imgs.to(DEVICE), masks.squeeze(1).to(DEVICE)  # B x H x W
+            optimizer.zero_grad()
+            outputs = model(imgs)  # B x 7 x H x W
+            loss = criterion(outputs, masks)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        avg_train_loss = train_loss / len(train_loader)
+
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for imgs, masks, _ in val_loader:
+                imgs, masks = imgs.to(DEVICE), masks.squeeze(1).to(DEVICE)
+                outputs = model(imgs)
+                loss = criterion(outputs, masks)
+                val_loss += loss.item()
+        avg_val_loss = val_loss / len(val_loader)
+
+        scheduler.step(avg_val_loss)
+        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+    # Save model
+    save_path = repo_root / "checkpoints/deepglobe_multiclass_finetuned.pth"
+    torch.save(model.state_dict(), save_path)
+    print(f"✅ Model saved to {save_path}")
+
+
+# Main
+
 if __name__ == "__main__":
-    model = get_model()
-    print(model)
-    x = torch.randn(1, 3, 512, 512)
-    y = model(x)
-    print(f"Output shape: {y.shape}")
+    train()
