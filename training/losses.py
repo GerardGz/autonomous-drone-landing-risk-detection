@@ -48,9 +48,9 @@ class BCEWithLogitsDiceLoss(nn.Module):
         return self.w_bce * loss_bce + self.w_dice * loss_dice
 
 
-# -----------------------------
+
 # Optional helper function
-# -----------------------------
+
 def get_loss(logits, target, combined=True):
     if combined:
         criterion = BCEWithLogitsDiceLoss()
