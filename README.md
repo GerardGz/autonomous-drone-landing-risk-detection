@@ -4,7 +4,7 @@ Overview
 
 This project aims to detect potential threat areas from top-down satellite imagery using a custom Convolutional Neural Network (CNN). The model is trained to identify objects such as buildings, fields, and other areas that may pose a high-risk for unauthorized drone activity.
 
-The workflow involves training the CNN on publicly available datasets, including SpaceNet AOI Vegas and the DeepGlobe Land Cover Classification Dataset, followed by fine-tuning for improved accuracy.
+The workflow involves training the CNN on publicly available datasets, including DeepGlobe Land Cover Classification Datase.
 
 This project is implemented in Python and fully version-controlled on GitHub
 
